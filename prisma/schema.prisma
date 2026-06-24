@@ -1,0 +1,516 @@
+// ============================================================================
+// SNUSII V3 — Prisma Schema
+// ============================================================================
+// V2 → V3 changes:
+//  - Added AuditLog model (append-only, indexed by actor + action + createdAt)
+//  - Added AppSetting model (key/value config, replaces settings.json)
+//  - Added Notification model (in-app notifications for users/admins)
+//  - Added FeatureFlag model (runtime feature toggles)
+//  - Added indexes on hot columns: Order.status, Order.customerId,
+//    Review.productId, Product.slug, Product.brandId
+//  - Added `@@index` on (customerId, createdAt) for orders-by-customer queries
+//  - Soft-delete columns added: deletedAt (optional) for User, Product, Order
+//  - Added `currency` to Order (multi-currency ready)
+//  - Added `ip` and `userAgent` to User for signup audit
+//  - All JSON-encoded string fields (images, permissions, brands) documented
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  DISTRIBUTOR_ADMIN
+  DISTRIBUTOR_STAFF
+  SALES_REP
+  CONSUMER
+  CORPORATE
+}
+
+enum AdminPermission {
+  VIEW_DASHBOARD
+  MANAGE_USERS
+  MANAGE_PRODUCTS
+  MANAGE_ORDERS
+  MANAGE_CONTENT
+  MANAGE_MARKETING
+  VIEW_REPORTS
+  MANAGE_SETTINGS
+  EXPORT_DATA
+  MANAGE_PROMOTIONS
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  COD
+  PAYMOB
+  FAWRY
+  VODAFONE_CASH
+  INSTAPAY
+}
+
+enum CouponType {
+  PERCENTAGE
+  FIXED
+}
+
+enum LoyaltyTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+}
+
+enum NotificationType {
+  ORDER_UPDATE
+  LOYALTY_TIER_UP
+  PROMO
+  SYSTEM
+  REVIEW_REPLY
+}
+
+// ─── User ──────────────────────────────────────────────────────────────────
+
+model User {
+  id            String              @id @default(cuid())
+  email         String              @unique
+  password      String              // scrypt-hashed (V3) — see lib/password.ts
+  name          String?
+  phone         String?
+  role          Role                @default(CONSUMER)
+  permissions   String              @default("[]") // JSON: AdminPermission[]
+  isActive      Boolean             @default(true)
+  avatar        String?
+  governorate   String?
+  city          String?
+  address       String?
+  emailVerified DateTime?
+  signupIp      String?
+  signupUserAgent String?
+  deletedAt     DateTime?           // soft delete
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  orders          Order[]
+  reviews         Review[]
+  loyaltyProfile  LoyaltyProfile?
+  cart            Cart?
+  coupons         CouponUsage[]
+  notifications   Notification[]
+  auditLogs       AuditLog[]
+
+  @@index([role, isActive])
+  @@index([createdAt])
+}
+
+// ─── Brand ─────────────────────────────────────────────────────────────────
+
+model Brand {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  slug        String    @unique
+  logo        String?
+  description String?
+  country     String?   @default("Sweden")
+  website     String?
+  isActive    Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  products Product[]
+
+  @@index([isActive, sortOrder])
+}
+
+// ─── Category ───────────────────────────────────────────────────────────────
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  image       String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products Product[]
+
+  @@index([isActive, sortOrder])
+}
+
+// ─── Product ─────────────────────────────────────────────────────────────────
+
+model Product {
+  id              String    @id @default(cuid())
+  name            String
+  nameAr          String?
+  slug            String    @unique
+  shortDescription String?
+  description     String?
+  strength        Int
+  flavor          String
+  canCount        Int       @default(20)
+  price           Float
+  comparePrice    Float?
+  stock           Int       @default(0)
+  sku             String    @unique
+  image           String
+  images          String    @default("[]") // JSON: string[]
+  blurHash        String?
+  isFeatured      Boolean   @default(false)
+  isBestseller    Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  metaTitle       String?
+  metaDescription String?
+  sortOrder       Int       @default(0)
+  deletedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  brand       Brand       @relation(fields: [brandId], references: [id])
+  brandId     String
+  category    Category    @relation(fields: [categoryId], references: [id])
+  categoryId  String
+  reviews     Review[]
+  orderItems  OrderItem[]
+  carts       CartItem[]
+
+  @@index([brandId, isActive])
+  @@index([categoryId, isActive])
+  @@index([isBestseller, isActive])
+  @@index([isFeatured, isActive])
+  @@index([price])
+  @@index([createdAt])
+}
+
+// ─── Order ──────────────────────────────────────────────────────────────────
+
+model Order {
+  id              String        @id @default(cuid())
+  orderNumber     String        @unique
+  status          OrderStatus   @default(PENDING)
+  paymentStatus   PaymentStatus @default(PENDING)
+  paymentMethod   PaymentMethod?
+  currency        String        @default("EGP")
+
+  customer        User?         @relation(fields: [customerId], references: [id])
+  customerId      String?
+
+  guestName       String?
+  guestPhone      String?
+  guestEmail      String?
+
+  shippingName    String
+  shippingPhone   String
+  shippingAddress String
+  shippingCity    String
+  shippingGovernorate String
+  shippingCost    Float         @default(0)
+  estimatedDays   Int           @default(2)
+
+  subtotal        Float
+  discount        Float         @default(0)
+  tax             Float         @default(0)
+  total           Float
+
+  notes           String?
+
+  confirmedAt     DateTime?
+  shippedAt       DateTime?
+  deliveredAt     DateTime?
+  cancelledAt     DateTime?
+  deletedAt       DateTime?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  items           OrderItem[]
+  payments        Payment[]
+  reviews         Review[]
+
+  @@index([customerId, createdAt])
+  @@index([status, createdAt])
+  @@index([paymentStatus])
+  @@index([shippingGovernorate])
+  @@index([createdAt])
+}
+
+// ─── OrderItem ───────────────────────────────────────────────────────────────
+
+model OrderItem {
+  id          String  @id @default(cuid())
+  productName String
+  quantity    Int
+  unitPrice   Float
+  total       Float
+
+  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId     String
+  product     Product @relation(fields: [productId], references: [id])
+  productId   String
+
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+// ─── Payment ─────────────────────────────────────────────────────────────────
+
+model Payment {
+  id            String        @id @default(cuid())
+  method        PaymentMethod
+  status        PaymentStatus @default(PENDING)
+  amount        Float
+  currency      String        @default("EGP")
+  transactionId String?
+  payload       String?
+
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId       String
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([orderId])
+  @@index([status, createdAt])
+  @@index([transactionId])
+}
+
+// ─── Review ─────────────────────────────────────────────────────────────────
+
+model Review {
+  id               String   @id @default(cuid())
+  rating           Int
+  title            String?
+  content          String
+  images           String?  @default("[]")
+  verifiedPurchase Boolean  @default(false)
+  helpfulCount     Int      @default(0)
+  isApproved       Boolean  @default(false) // V3: moderation
+  rejectedReason   String?
+
+  customer         User     @relation(fields: [customerId], references: [id])
+  customerId       String
+  product          Product  @relation(fields: [productId], references: [id])
+  productId        String
+  order            Order?   @relation(fields: [orderId], references: [id])
+  orderId          String?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([customerId, productId])
+  @@index([productId, isApproved, createdAt])
+  @@index([rating])
+}
+
+// ─── Coupon ──────────────────────────────────────────────────────────────────
+
+model Coupon {
+  id          String      @id @default(cuid())
+  code        String      @unique
+  type        CouponType
+  value       Float
+  minOrder    Float?
+  maxDiscount Float?
+  usageLimit  Int?
+  usageCount  Int         @default(0)
+  startsAt    DateTime?
+  expiresAt   DateTime?
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  usages      CouponUsage[]
+
+  @@index([isActive, expiresAt])
+}
+
+model CouponUsage {
+  id        String  @id @default(cuid())
+  coupon    Coupon  @relation(fields: [couponId], references: [id])
+  couponId  String
+  user      User    @relation(fields: [userId], references: [id])
+  userId    String
+  orderId   String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([couponId, userId, orderId])
+  @@index([couponId])
+  @@index([userId])
+}
+
+// ─── Loyalty ───────────────────────────────────────────────────────────────
+
+model LoyaltyProfile {
+  id          String      @id @default(cuid())
+  points      Int         @default(0)
+  tier        LoyaltyTier @default(BRONZE)
+  totalSpent  Float       @default(0)
+
+  user        User        @relation(fields: [userId], references: [id])
+  userId      String      @unique
+
+  transactions LoyaltyTransaction[]
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([tier])
+}
+
+model LoyaltyTransaction {
+  id            String      @id @default(cuid())
+  points        Int
+  type          String
+  description   String
+  balance       Int
+
+  profile       LoyaltyProfile @relation(fields: [profileId], references: [id])
+  profileId     String
+
+  createdAt     DateTime    @default(now())
+
+  @@index([profileId, createdAt])
+}
+
+// ─── Cart ────────────────────────────────────────────────────────────────────
+
+model Cart {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items     CartItem[]
+}
+
+model CartItem {
+  id        String  @id @default(cuid())
+  quantity  Int     @default(1)
+  cart      Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  cartId    String
+  product   Product @relation(fields: [productId], references: [id])
+  productId String
+
+  createdAt DateTime @default(now())
+
+  @@unique([cartId, productId])
+  @@index([cartId])
+}
+
+// ─── Store Locator ─────────────────────────────────────────────────────────
+
+model Store {
+  id          String   @id @default(cuid())
+  name        String
+  governorate String
+  city        String
+  address     String
+  phone       String?
+  lat         Float
+  lng         Float
+  brands      String?  @default("[]")
+  hours       String?  @default("09:00-22:00")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([governorate, isActive])
+}
+
+// ─── V3: Audit Log (append-only, tamper-evident) ───────────────────────────
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  actorId       String?
+  actorEmail    String?
+  actorRole     String?
+  action        String   // e.g. "order.status.change"
+  targetType    String?  // e.g. "Order"
+  targetId      String?
+  description   String?
+  ip            String?
+  userAgent     String?
+  correlationId String?
+  before        String?  // JSON
+  after         String?  // JSON
+  metadata      String?  // JSON
+
+  actor         User?    @relation(fields: [actorId], references: [id])
+
+  createdAt     DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId])
+}
+
+// ─── V3: App Settings (key/value config) ────────────────────────────────────
+
+model AppSetting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String // serialized JSON
+  updatedAt DateTime @updatedAt
+}
+
+// ─── V3: Feature Flags ──────────────────────────────────────────────────────
+
+model FeatureFlag {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  description String?
+  enabled     Boolean  @default(false)
+  rolloutPct  Int      @default(0) // 0–100, for gradual rollouts
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+}
+
+// ─── V3: In-app Notifications ───────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(cuid())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  link      String?
+  isRead    Boolean          @default(false)
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, isRead, createdAt])
+  @@index([type, createdAt])
+}

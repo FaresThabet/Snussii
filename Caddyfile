@@ -1,0 +1,50 @@
+# ============================================================================
+# SNUSII V2 — Caddy Reverse Proxy Configuration
+# ============================================================================
+# Caddy auto-provisions TLS via Let's Encrypt.
+# Replace snusii.eg with your actual domain.
+# ============================================================================
+
+snusii.eg, www.snusii.eg {
+	# Security headers
+	header {
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# Static assets — long cache via Next.js headers (passed through)
+	handle /_next/static/* {
+		reverse_proxy app:3000
+	}
+
+	handle /images/* {
+		reverse_proxy app:3000
+	}
+
+	# API routes
+	handle /api/* {
+		reverse_proxy app:3000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Everything else
+	handle {
+		reverse_proxy app:3000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+}
+
+# Development / local alternative (uncomment and use with `caddy run`):
+# :80 {
+# 	reverse_proxy localhost:3000
+# }
