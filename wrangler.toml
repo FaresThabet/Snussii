@@ -1,0 +1,3 @@
+name = "my-worker"          # اسم المشروع
+main = "\src\types\index.ts"       # ملف البداية (entry point)
+compatibility_date = "2026-06-24"  # تاريخ التوافق
